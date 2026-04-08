@@ -14,27 +14,37 @@
  * limitations under the License.
  */
 
+import styled from "@emotion/styled"
+import type { Key } from "@react-types/shared"
+import type { CSSProperties } from "react"
 import {
-  KeyboardEventHandler,
   memo,
-  MouseEventHandler,
   ReactElement,
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
 } from "react"
 
-import { StatefulMenu } from "baseui/menu"
-import { PLACEMENT, TRIGGER_TYPE, Popover as UIPopover } from "baseui/popover"
+import { useResizeObserver } from "@react-aria/utils"
+import { mergeProps, useButton, useMenuTrigger } from "react-aria"
+import {
+  Menu,
+  MenuContext,
+  MenuItem,
+  OverlayTriggerStateContext,
+  Popover,
+  PopoverContext,
+  Provider,
+  RootMenuTriggerStateContext,
+} from "react-aria-components"
+import { useMenuTriggerState } from "react-stately"
 
 import { MenuButton as MenuButtonProto } from "@streamlit/protobuf"
 
 import IsSidebarContext from "~lib/components/core/IsSidebarContext"
-import {
-  Box,
-  getPopoverContainerStyle,
-} from "~lib/components/shared/Base/styled-components"
+import { Box } from "~lib/components/shared/Base/styled-components"
 import BaseButton, {
   BaseButtonKind,
   BaseButtonSize,
@@ -54,10 +64,21 @@ import { WidgetStateManager } from "~lib/WidgetStateManager"
 import {
   StyledMenuButtonExpansionIcon,
   StyledMenuButtonLabelContainer,
-  StyledMenuItem,
   StyledMenuOptionIcon,
   StyledMenuOptionLabel,
 } from "./styled-components"
+
+const StreamlitMenuItem = styled(MenuItem)(({ theme }) => ({
+  display: "flex",
+  alignItems: "center",
+  marginTop: theme.spacing.twoXS,
+  marginBottom: theme.spacing.twoXS,
+  padding: 0,
+  background: "transparent",
+  cursor: "pointer",
+  listStyle: "none",
+  minWidth: theme.sizes.minMenuWidth,
+}))
 
 const BUTTON_TYPE_TO_KIND: Record<string, BaseButtonKind> = {
   primary: BaseButtonKind.PRIMARY,
@@ -65,62 +86,34 @@ const BUTTON_TYPE_TO_KIND: Record<string, BaseButtonKind> = {
   tertiary: BaseButtonKind.TERTIARY,
 }
 
-interface MenuOptionProps {
+interface MenuOptionContentProps {
   item: { label: string; value: string }
-  $isHighlighted?: boolean
-  onClick?: MouseEventHandler<HTMLLIElement>
-  onMouseEnter?: MouseEventHandler<HTMLLIElement>
-  onKeyDown?: KeyboardEventHandler<HTMLLIElement>
-  /** BaseUI internal props that are destructured but not forwarded to DOM. */
-  $disabled?: boolean
-  $isFocused?: boolean
-  $size?: string
-  resetMenu?: () => void
-  renderAll?: boolean
-  [key: string]: unknown
+  isFocused?: boolean
 }
 
-/** Menu option component for BaseUI StatefulMenu override. */
-const MenuOption = memo(function MenuOption({
+/** Renders a single menu option (icon extraction + markdown label). */
+const MenuOptionContent = memo(function MenuOptionContent({
   item,
-  $isHighlighted,
-  onClick,
-  onMouseEnter,
-  onKeyDown,
-  // Filter out BaseUI internal props that shouldn't be passed to DOM
-  $disabled: _$disabled,
-  $isFocused: _$isFocused,
-  $size: _$size,
-  resetMenu: _resetMenu,
-  renderAll: _renderAll,
-  ...restProps
-}: MenuOptionProps): ReactElement {
+  isFocused,
+}: MenuOptionContentProps): ReactElement {
   const { icon, text } = extractLeadingMaterialIcon(item.label)
   return (
-    <StyledMenuItem
-      {...restProps}
-      role="menuitem"
-      onClick={onClick}
-      onMouseEnter={onMouseEnter}
-      onKeyDown={onKeyDown}
-    >
-      <StyledHighlightWrapper $isHighlighted={$isHighlighted}>
-        <StyledMenuOptionLabel>
-          {icon && (
-            <StyledMenuOptionIcon aria-hidden="true">
-              <DynamicIcon iconValue={icon} size="md" />
-            </StyledMenuOptionIcon>
-          )}
-          <StreamlitMarkdown
-            source={text}
-            allowHTML={false}
-            isLabel
-            largerLabel={false}
-            disableLinks
-          />
-        </StyledMenuOptionLabel>
-      </StyledHighlightWrapper>
-    </StyledMenuItem>
+    <StyledHighlightWrapper $isHighlighted={isFocused}>
+      <StyledMenuOptionLabel>
+        {icon && (
+          <StyledMenuOptionIcon aria-hidden="true">
+            <DynamicIcon iconValue={icon} size="md" />
+          </StyledMenuOptionIcon>
+        )}
+        <StreamlitMarkdown
+          source={text}
+          allowHTML={false}
+          isLabel
+          largerLabel={false}
+          disableLinks
+        />
+      </StyledMenuOptionLabel>
+    </StyledHighlightWrapper>
   )
 })
 
@@ -147,15 +140,42 @@ function MenuButton(props: Props): ReactElement {
   const buttonDisabled =
     disabled || element.disabled || element.options.length === 0
 
-  const handleItemSelect = useCallback(
-    (params: { item: { value: string } }) => {
+  const menuState = useMenuTriggerState({
+    isOpen,
+    onOpenChange: setIsOpen,
+  })
+
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [buttonWidth, setButtonWidth] = useState<string | null>(null)
+
+  useResizeObserver({
+    ref: buttonRef,
+    onResize: useCallback(() => {
+      if (buttonRef.current) {
+        setButtonWidth(`${buttonRef.current.offsetWidth}px`)
+      }
+    }, []),
+  })
+
+  const { menuTriggerProps, menuProps } = useMenuTrigger(
+    { type: "menu" },
+    menuState,
+    buttonRef
+  )
+
+  const { buttonProps } = useButton(menuTriggerProps, buttonRef)
+
+  const handleAction = useCallback(
+    (key: Key): void => {
+      const value = String(key)
       setIsOpen(false)
       if (buttonDisabled) {
         return
       }
       widgetMgr.setStringTriggerValue(
         element,
-        params.item.value,
+        value,
         { fromUi: true },
         fragmentId
       )
@@ -165,95 +185,88 @@ function MenuButton(props: Props): ReactElement {
 
   return (
     <Box className="stMenuButton" data-testid="stMenuButton">
-      <UIPopover
-        triggerType={TRIGGER_TYPE.click}
-        placement={PLACEMENT.bottomLeft}
-        isOpen={isOpen}
-        onClickOutside={() => setIsOpen(false)}
-        onEsc={() => setIsOpen(false)}
-        ignoreBoundary={isInSidebar}
-        popoverMargin={convertRemToPx(theme.spacing.twoXS)}
-        renderAll={true}
-        content={() => (
-          <StatefulMenu
-            items={menuItems}
-            onItemSelect={handleItemSelect}
-            overrides={{
-              List: {
-                props: {
-                  role: "menu",
-                },
-                style: {
-                  backgroundColor: theme.colors.bgColor,
-                  paddingTop: theme.spacing.threeXS,
-                  paddingBottom: theme.spacing.threeXS,
-                  paddingLeft: theme.spacing.xs,
-                  paddingRight: theme.spacing.xs,
-                  boxShadow: "none",
-                  outline: "none",
-                },
-              },
-              Option: {
-                component: MenuOption,
-              },
-            }}
-          />
-        )}
-        overrides={{
-          Body: {
-            props: {
-              "data-testid": "stMenuButtonBody",
+      <Provider
+        values={[
+          [OverlayTriggerStateContext, menuState],
+          [RootMenuTriggerStateContext, menuState],
+          [MenuContext, { ...menuProps, ref: scrollRef }],
+          [
+            PopoverContext,
+            {
+              trigger: "MenuTrigger",
+              triggerRef: buttonRef,
+              scrollRef,
+              placement: "bottom start",
+              offset: convertRemToPx(theme.spacing.twoXS),
+              shouldFlip: true,
+              containerPadding: isInSidebar ? 0 : 12,
+              style: {
+                "--trigger-width": buttonWidth ?? undefined,
+              } as CSSProperties,
+              "aria-labelledby": menuProps["aria-labelledby"],
             },
-            style: () => ({
-              ...getPopoverContainerStyle(theme),
-
-              // Use xl border radius instead of the default
-              borderTopLeftRadius: theme.radii.xl,
-              borderTopRightRadius: theme.radii.xl,
-              borderBottomRightRadius: theme.radii.xl,
-              borderBottomLeftRadius: theme.radii.xl,
-
-              marginRight: theme.spacing.lg,
-              marginBottom: theme.spacing.lg,
-              maxHeight: "70vh",
-              overflow: "auto",
-            }),
-          },
-        }}
+          ],
+        ]}
       >
-        {/* Wrapped in div for BaseUI Popover anchor positioning */}
-        <div>
-          <BaseButtonTooltip help={element.help} containerWidth={true}>
-            <BaseButton
-              data-testid="stMenuButtonButton"
-              kind={kind}
-              size={BaseButtonSize.SMALL}
-              disabled={buttonDisabled}
-              containerWidth={true}
-              onClick={() => setIsOpen(!isOpen)}
-              aria-haspopup="menu"
-              aria-expanded={isOpen}
-            >
-              <StyledMenuButtonLabelContainer>
-                <DynamicButtonLabel
-                  icon={element.icon}
-                  label={element.label}
+        <BaseButtonTooltip help={element.help} containerWidth={true}>
+          <BaseButton
+            {...mergeProps(buttonProps, {
+              "data-testid": "stMenuButtonButton",
+              kind,
+              size: BaseButtonSize.SMALL,
+              disabled: buttonDisabled,
+              containerWidth: true,
+              "aria-haspopup": "menu",
+              "aria-expanded": menuState.isOpen,
+            })}
+            ref={buttonRef}
+          >
+            <StyledMenuButtonLabelContainer>
+              <DynamicButtonLabel icon={element.icon} label={element.label} />
+              <StyledMenuButtonExpansionIcon aria-hidden="true">
+                <DynamicIcon
+                  iconValue={
+                    menuState.isOpen
+                      ? ":material/expand_less:"
+                      : ":material/expand_more:"
+                  }
+                  size="lg"
                 />
-                <StyledMenuButtonExpansionIcon aria-hidden="true">
-                  <DynamicIcon
-                    iconValue={
-                      isOpen
-                        ? ":material/expand_less:"
-                        : ":material/expand_more:"
-                    }
-                    size="lg"
-                  />
-                </StyledMenuButtonExpansionIcon>
-              </StyledMenuButtonLabelContainer>
-            </BaseButton>
-          </BaseButtonTooltip>
-        </div>
-      </UIPopover>
+              </StyledMenuButtonExpansionIcon>
+            </StyledMenuButtonLabelContainer>
+          </BaseButton>
+        </BaseButtonTooltip>
+        <Popover data-testid="stMenuButtonBody">
+          <Menu
+            selectionMode="none"
+            onAction={handleAction}
+            style={{
+              backgroundColor: theme.colors.bgColor,
+              paddingTop: theme.spacing.threeXS,
+              paddingBottom: theme.spacing.threeXS,
+              paddingLeft: theme.spacing.xs,
+              paddingRight: theme.spacing.xs,
+              boxShadow: "none",
+              outline: "none",
+            }}
+          >
+            {menuItems.map(item => {
+              const { text } = extractLeadingMaterialIcon(item.label)
+              return (
+                <StreamlitMenuItem
+                  key={item.value}
+                  id={item.value}
+                  textValue={text}
+                >
+                  {({ isFocused }) => (
+                    <MenuOptionContent item={item} isFocused={isFocused} />
+                  )}
+                </StreamlitMenuItem>
+              )
+            })}
+          </Menu>
+        </Popover>
+      </Provider>
     </Box>
   )
 }
