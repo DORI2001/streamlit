@@ -211,7 +211,7 @@ const Popover: React.FC<React.PropsWithChildren<PopoverProps>> = ({
           </BaseButtonTooltip>
         </div>
 
-        <BasePopover.Portal keepMounted>
+        <BasePopover.Portal>
           <BasePopover.Positioner
             side="bottom"
             align="start"
