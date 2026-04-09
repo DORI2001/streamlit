@@ -146,8 +146,9 @@ const Popover: React.FC<React.PropsWithChildren<PopoverProps>> = ({
         } else if (isPassivelyKeyed) {
           setStoredOpen(false)
         }
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
+        // Defer closing so inputs inside the popover receive blur/change before hide.
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
             setOpen(false)
           })
         })
