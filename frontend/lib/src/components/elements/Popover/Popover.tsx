@@ -150,7 +150,7 @@ const Popover: React.FC<React.PropsWithChildren<PopoverProps>> = ({
         // Let nested widgets flush blur/change (and widget state) before we sync the
         // popover boolean to the manager and hide UI — avoids losing in-popover edits
         // when closing via outside click (e2e: text_input in popover).
-        window.setTimeout(() => {
+        const flushAndClose = (): void => {
           if (widgetId) {
             widgetMgr?.setBoolValue(
               { id: widgetId },
@@ -164,7 +164,10 @@ const Popover: React.FC<React.PropsWithChildren<PopoverProps>> = ({
           window.setTimeout(() => {
             setOpen(false)
           }, 0)
-        }, 0)
+        }
+        requestAnimationFrame(() => {
+          requestAnimationFrame(flushAndClose)
+        })
         return
       }
 
@@ -194,7 +197,11 @@ const Popover: React.FC<React.PropsWithChildren<PopoverProps>> = ({
 
   return (
     <Box data-testid="stPopover" className="stPopover" ref={elementRef}>
-      <PopoverPrimitive.Root open={open} onOpenChange={handleOpenChange}>
+      <PopoverPrimitive.Root
+        modal={false}
+        open={open}
+        onOpenChange={handleOpenChange}
+      >
         <PopoverPrimitive.Trigger asChild>
           {/* Wrapper matches prior BaseWeb anchor so BaseButtonTooltip can render a fragment when help is set */}
           <div style={{ width: "100%" }}>
